@@ -1,8 +1,11 @@
 
-#from pathlib import Path
+from pathlib import Path
 import random
+#import sys
 #import re
 #from configparser import NoOptionError
+from ..helpers.Filesystem import getFileContent
+
 
 class TracktitleGenerator():
     def __init__(self, prefixes, suffixes, usedTrackTitlesFilePath = None):
@@ -11,7 +14,9 @@ class TracktitleGenerator():
         self.prefixes = []
         self.suffixes = []
 
-        self.usedTrackTitlesFilePath = usedTrackTitlesFilePath
+        self.usedTrackTitlesFilePath = None
+        if usedTrackTitlesFilePath != '':
+            self.usedTrackTitlesFilePath = Path(usedTrackTitlesFilePath)
         self.usedTrackTitles = []
         self.usedTrackTitleWords = []
 
@@ -78,11 +83,11 @@ class TracktitleGenerator():
             return
         if self.usedTrackTitlesFilePath == None:
             return
-        if self.usedTrackTitlesFilePath.is_file():
+        if not self.usedTrackTitlesFilePath.is_file():
             return
 
         self.usedTrackTitles = getFileContent(
-            str(self.usedTracktitlesFile)
+            str(self.usedTrackTitlesFilePath)
         ).split('\n')
         self.usedTrackTitleWords = ' '.join(self.usedTrackTitles).split()
 
@@ -94,25 +99,59 @@ class TracktitleGenerator():
         if len(usedItems) == 0:
             return allItems
 
+        # collect all existing items as {term: count} pair
         weighted = {}
         for item in allItems:
-            for usedItem in usedItems:
-                if not item in weighted:
-                    weighted[item] = 0
-                if item == usedItem:
-                    weighted[item] = weighted[item] +1
-                    
-        # group itmes by count
+            weighted[item] = 0
+
+        # increase counter to all existing items
+        for usedItem in usedItems:
+            if usedItem == '':
+                continue
+
+            if not usedItem in weighted:
+                # skip used items that are not in the available list
+                continue
+            weighted[usedItem] = weighted[usedItem] +1
+
+        # group items by count
         groupedByCount = {}
-        for key,value in sorted(enumerate(weighted), reverse=True):
-            if not weighted[value] in groupedByCount:
-                groupedByCount[ weighted[value] ] = []
-                groupedByCount[ weighted[value] ].append(value)
-        
+        for term, counter in weighted.items():
+            if not counter in groupedByCount:
+                groupedByCount[counter] = []
+            groupedByCount[counter].append(term)
+
         finalItems = []
-        for key in sorted(groupedByCount.keys()):
-            finalItems = finalItems + groupedByCount[key]
-            if len(finalItems) >= neededAmount:
-                return finalItems
-                
-        return finalItems
+        # iterate over all counterpairs beginning with zero
+        for counter in range(0, 1000):
+            if counter in groupedByCount:
+                finalItems += groupedByCount[counter]
+                if len(finalItems) >= neededAmount:
+                    # now we have enough items collected to choose from...
+                    break
+
+        # randomize list and return first n items
+        random.shuffle(finalItems)
+        return finalItems[:neededAmount]
+
+    def tracktitlesToBlacklist(self, jamSession):
+        if self.usedTrackTitlesFilePath == None:
+            # disabled by config
+            return
+
+        fileContentLines = []
+        if self.usedTrackTitlesFilePath.is_file():
+            fileContentLines = getFileContent(
+                str(self.usedTrackTitlesFilePath)
+            ).split('\n')
+
+        for key, track in jamSession.tracks.items():
+            fileContentLines.append(track.trackTitle)
+
+        # add a blank line as session separator
+        fileContentLines.append('')
+
+        # persist blacklist in filesystem
+        self.usedTrackTitlesFilePath.write_text(
+            '\n'.join(fileContentLines)
+        )
