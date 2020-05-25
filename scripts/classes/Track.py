@@ -62,7 +62,6 @@ class Track(object):
                 normalizeSingleStem = True
 
         if jamConf.basket.webstem == True:
-            mergeStems = True
             if jamConf.cnf.get('webstem.audio', 'normalize') == '1':
                 normalizeSingleStem = True
 
@@ -100,6 +99,8 @@ class Track(object):
         if bpmDetection == True:
             print(f'TRACK:{self.dirName} detecting BPM...')
             self.bpm = detectBpm(self.tmpFileMergedStems, jamConf.cnf.get('bpmdetect', 'method'))
+
+        return self
 
     '''
         based on before+after volume levels of normalized input-stems some upper and lower boundries gets collected

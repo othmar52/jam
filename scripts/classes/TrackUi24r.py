@@ -46,6 +46,7 @@ class TrackUi24r:
         self.requestedSkipIfSilence = False
         self.requestedMonoToStereo = False
 
+        self.runStereoMergeFor = []
 
     def setUiRecSessionFile(self, filePath):
         self.uiRecsessionFile = filePath
@@ -68,7 +69,7 @@ class TrackUi24r:
 
         for key,stem in enumerate(self.stems):
             self.stems[key].channelIndex = self.findInputChannelIndex(stem.fileName)
-            if self.stems[key].channelIndex == False:
+            if self.stems[key].channelIndex < 0:
                 continue
 
             self.stems[key].ffmpegFilterArgs = self.getFFmpegFilterArgsForIndex(self.stems[key].channelIndex)

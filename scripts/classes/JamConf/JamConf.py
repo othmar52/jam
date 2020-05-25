@@ -17,6 +17,7 @@ from ...helpers.Strings import az09
 from ...helpers.Strings import uniqueOrSuffix
 from ...helpers.Strings import sortByCustomOrdering
 from ...helpers.Strings import nextLetter
+from ...helpers.Strings import replaceCommonPlaceholders
 from ...helpers.AudioProcessing import readAudioProperty
 
 '''
@@ -44,7 +45,6 @@ class JamConf(JamConfBase):
         self.cuemixNormalized = None
         self.cuesheet = None
 
-        
         self.usedTracktitlesFile = None
         # TODO persist session counter in file
         self.lastSessionCounterFile = None
@@ -69,16 +69,26 @@ class JamConf(JamConfBase):
         self.ensureSessionCounter()
         self.ensureSessionDate()
         self.allMusicianShorties = self.getAllMusicianShorties()
-        # TODO set usedTrackTitle file
         self.generator = TracktitleGenerator(
             self.cnf.get('tracktitles', 'prefixes'),
             self.cnf.get('tracktitles', 'suffixes'),
+            replaceCommonPlaceholders(
+                self.cnf.get('general', 'usedTrackTitlesFile'),
+                self
+            )
         )
         self.buildTracksAndStems()
 
     def confirmAndRun(self):
         print(self.jamSession.printForConfirmation())
-        choice = input(f'press return to start processing...')
+        choice = input(f'press r for new random tracknames\npress 0-n for single trackname randomizer\npress return to start processing')
+        if choice.isnumeric():
+            self.otherRandomTitleForTrackNumber(int(choice))
+            return self.confirmAndRun()
+        if choice == 'r':
+            self.otherRandomTitleForTrackNumber()
+            return self.confirmAndRun()
+
         if choice != '':
             print('exiting...')
             sys.exit()
@@ -195,6 +205,12 @@ class JamConf(JamConfBase):
             randomColor = secrets.choice(availableColors)
             self.jamSession.inputFiles[i].color = randomColor
             availableColors.remove(randomColor)
+
+    def otherRandomTitleForTrackNumber(self, trackIndex = None):
+        for key, track in self.jamSession.tracks.items():
+            if not trackIndex or track.trackNumber == trackIndex:
+                track.trackTitle = self.getTrackTitle(track.dirName)
+
 
     def getTrackTitle(self, dirName):
         try:

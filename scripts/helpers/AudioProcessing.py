@@ -5,16 +5,18 @@ import time
 import json
 import re
 
-def generalCmd(cmdArgsList, description, readStdError = False):
+def generalCmd(cmdArgsList, description, readStdError = False, cwd=None):
     logging.info("starting %s" % description)
     logging.debug(' '.join(cmdArgsList))
     #print(' '.join(cmdArgsList))
+    if cwd != None:
+        cwd = str(cwd)
     startTime = time.time()
     if readStdError:
-        process = subprocess.Popen(cmdArgsList, stderr=subprocess.PIPE)
+        process = subprocess.Popen(cmdArgsList, stderr=subprocess.PIPE, cwd=cwd)
         processStdOut = process.stderr.read()
     else:
-        process = subprocess.Popen(cmdArgsList, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(cmdArgsList, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd)
         processStdOut = process.stdout.read()
     retcode = process.wait()
     if retcode != 0:
@@ -76,6 +78,7 @@ def readAudioProperty(filePath, propName):
         '-show_entries', f'stream={propName}',
         '-v', 'quiet', '-of', 'csv=p=0'
     ]
+    #print(' '.join(cmd))
     processStdOut = generalCmd(cmd, f'readAudioProperty {propName}')
 
     if propName in ['duration']:
@@ -97,16 +100,36 @@ def detectSilences(inputPath, dbLevel = '-45dB', silenceDuration = 2):
 def isSilenceFile(inputPath, inputFileDuration):
     # TODO move dbLevel to config
     dbLevel = '-40dB'
+    dbLevel = '-65dB'
     silenceDuration = inputFileDuration - 0.1
     cmd = [
         'ffmpeg', '-hide_banner', '-stats', '-i', str(inputPath),
-        '-af', ('silencedetect=noise=%s:d=%s' % (dbLevel, silenceDuration) ),
+        '-af',
+        #f'silencedetect=noise={dbLevel}:d={silenceDuration}',
+        f'silencedetect=noise={dbLevel}',
         '-f','null', '-'
     ]
     processStdOut = generalCmd(cmd, 'silence detection')
-    if 'silence_start:' in processStdOut.split():
+    totalDuration = 0
+    for line in processStdOut.split('\n'):
+        match = re.match('.*silence_duration\:\ ([0-9.]*)$', line.strip())
+        if match:
+            totalDuration += float(match[1])
+    
+    silencePercent = totalDuration / (float(inputFileDuration) / 100)
+    durationNonSilence = float(inputFileDuration) - totalDuration
+    #print ('silence for', inputPath, silencePercent, durationNonSilence)
+    if durationNonSilence > 10:
+        return False
+    if silencePercent > 99:
         return True
     return False
+
+    # old version which is not compatible with tiny pops
+    #processStdOut = generalCmd(cmd, 'silence detection')
+    #if 'silence_start:' in processStdOut.split():
+    #    return True
+    #return False
 
 
 ''' parse the result of silence detect and create filter lines for ffmpeg'''
@@ -187,7 +210,7 @@ def normalizeAudio(inputFilePath, outputFilePath):
     cmd = [
         'ffmpeg', '-y', '-hide_banner',
         '-i', str(inputFilePath), '-af',
-        'dynaudnorm=m=100',
+        'dynaudnorm=m=100:g=5',
         str(outputFilePath)
     ]
     generalCmd(cmd, 'normalize wav (dynaudionorm)')

@@ -2,6 +2,7 @@
 output
 testdata
 config/local.ini
+config/usedTracktitles.local
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -3,6 +3,7 @@
 import re
 import os
 import secrets
+import concurrent.futures
 from shutil import copytree
 from pathlib import Path
 from ..helpers.Strings import *
@@ -16,8 +17,9 @@ from PIL import Image
 class Webstem(object):
     def __init__(self, templateDir):
         self.templateDir = templateDir
-        self.htmlTemplate = Path(f'{templateDir}/index.html')
+        self.htmlTemplate = Path(f'{templateDir}/index.htm')
         self.playerDir = Path(f'{templateDir}/data/stemplayer')
+        self.launcherDir = Path(f'{templateDir}/launcher')
         self.trackConfigTemplate = Path(f'{templateDir}/jstemplates/track.js')
         self.stemConfigTemplate = Path(f'{templateDir}/jstemplates/stem.js')
         self.imageConfigTemplate = Path(f'{templateDir}/jstemplates/image.js')
@@ -63,60 +65,97 @@ class Webstem(object):
             Path(f'{jamConf.jamSession.webstem["targetDir"]}/data/stemplayer'),
             'session'
         )
+        self.copyLauncherFiles(
+            jamConf,
+            Path(f'{jamConf.jamSession.webstem["targetDir"]}/launcher'),
+            'session'
+        )
         # copy html file on session level
         # TODO respect configured document name
         self.copyIndexDocument(
             jamConf,
-            Path(f'{jamConf.jamSession.webstem["targetDir"]}/index.html'),
+            Path(f'{jamConf.jamSession.webstem["targetDir"]}/index.htm'),
             'session'
         )
 
         self.copyImageFiles(jamConf)
         self.copyVideoFiles(jamConf)
 
-        for key, track in jamConf.jamSession.tracks.items():
-            track.webstem['targetDir'] = Path(
-                f'{jamConf.jamSession.webstem["targetDir"]}/data/{track.trackLetter}-{az09(track.trackTitle)}/data'
-            )
-            track.webstem['configJsFile'] = Path(f'{track.webstem["targetDir"]}/config.js')
-            track.webstem['tracklistJsFile'] = Path(f'{track.webstem["targetDir"]}/tracklist.js')
-            track.byteSize = 0
-            ensureExistingEmptyDirectory(track.webstem['targetDir'])
 
-            trackProgessString = f'TRACK:{track.trackNumber}/{len(jamConf.jamSession.tracks)}'
-            for stemIdx, stem in enumerate(track.stems):
+        maxWorkers = int(jamConf.cnf.get('general', 'maxWorkers'))
+        maxWorkers = 1
 
-                stemSrcPath = stem.path
-                stem.webstem['targetPath'] = Path(
-                    f'{track.webstem["targetDir"]}/{az09(stem.uniqueStemName)}.{jamConf.cnf.get("webstem.audio", "format")}'
-                )
-                if jamConf.cnf.get('webstem.audio', 'normalize') == '1':
-                    stemSrcPath = stem.tmpFileNormalized
-                stemProgressString = f'STEM:{stemIdx+1}/{len(track.stems)}'
-                print(f'WEBSTEM: {trackProgessString} {stemProgressString} converting to {jamConf.cnf.get("webstem.audio", "format")}')
-                convertAudio(
-                    stemSrcPath,
-                    jamConf.cnf.get('webstem.audio', 'codec'),
-                    jamConf.cnf.get('webstem.audio', 'samplerate'),
-                    jamConf.cnf.get('webstem.audio', 'bitrate'),
-                    stem.webstem['targetPath']
-                )
-                stem.normLevels['vanilla'] = detectVolume(stem.path)
-                stem.normLevels['normalized'] = detectVolume(stem.webstem['targetPath'])
-                track.collectDbLevelsFromInputFile(stem.normLevels['vanilla'])
-                stem.byteSize = stem.webstem['targetPath'].stat().st_size
-                stem.wavPeaks = getWaveformValues(
-                    stemSrcPath,
-                    jamConf.cnf.get('webstem', 'waveformResolution')
-                )
-                stem.calculateSilencePercent()
-                track.byteSize = track.byteSize + stem.byteSize
+        # TODO remove duplicate code
+        if maxWorkers <= 1:
 
-                #print (stem.uniqueStemName)
-            self.finishWebStemTrack(track, jamConf)
+            for key, track in jamConf.jamSession.tracks.items():
+                track.webstem['targetDir'] = Path(
+                    f'{jamConf.jamSession.webstem["targetDir"]}/data/{track.trackLetter}-{az09(track.trackTitle)}/data'
+                )
+                track.webstem['configJsFile'] = Path(f'{track.webstem["targetDir"]}/config.js')
+                track.webstem['tracklistJsFile'] = Path(f'{track.webstem["targetDir"]}/tracklist.js')
+                track.byteSize = 0
+                ensureExistingDirectory(track.webstem['targetDir'])
+                self.processWebstemTrack(track, jamConf)
+
+        else:
+            # paralellized tryout
+            with concurrent.futures.ProcessPoolExecutor(max_workers=maxWorkers) as executor:
+                for key, track in jamConf.jamSession.tracks.items():
+                    track.webstem['targetDir'] = Path(
+                        f'{jamConf.jamSession.webstem["targetDir"]}/data/{track.trackLetter}-{az09(track.trackTitle)}/data'
+                    )
+                    track.webstem['configJsFile'] = Path(f'{track.webstem["targetDir"]}/config.js')
+                    track.webstem['tracklistJsFile'] = Path(f'{track.webstem["targetDir"]}/tracklist.js')
+                    track.byteSize = 0
+                    ensureExistingDirectory(track.webstem['targetDir'])
+                    processedTrack = executor.submit(self.processWebstemTrack, track, jamConf)
+                    processedTrack.add_done_callback(self.processWebstemTrackCallback)
+
+            #self.processWebstemTrack(track, jamConf)
+
 
         self.finishWebStemSession(jamConf)
+        self.createZip(jamConf)
 
+
+    def processWebstemTrackCallback(self, pr):
+        print('done callback')
+        track = pr.result()
+
+    def processWebstemTrack(self, track, jamConf):
+        trackProgessString = f'TRACK:{track.trackNumber}/{len(jamConf.jamSession.tracks)}'
+        for stemIdx, stem in enumerate(track.stems):
+            stemProgressString = f'STEM:{stemIdx+1}/{len(track.stems)}'
+            print(f'WEBSTEM: {trackProgessString} {stemProgressString} converting to {jamConf.cnf.get("webstem.audio", "format")}')
+
+            stemSrcPath = stem.path
+            stem.webstem['targetPath'] = Path(
+                f'{track.webstem["targetDir"]}/{az09(stem.uniqueStemName)}.{jamConf.cnf.get("webstem.audio", "format")}'
+            )
+            if jamConf.cnf.get('webstem.audio', 'normalize') == '1':
+                stemSrcPath = stem.tmpFileNormalized
+            convertAudio(
+                stemSrcPath,
+                jamConf.cnf.get('webstem.audio', 'codec'),
+                jamConf.cnf.get('webstem.audio', 'samplerate'),
+                jamConf.cnf.get('webstem.audio', 'bitrate'),
+                stem.webstem['targetPath']
+            )
+            stem.normLevels['vanilla'] = detectVolume(stem.path)
+            stem.normLevels['normalized'] = detectVolume(stem.webstem['targetPath'])
+            track.collectDbLevelsFromInputFile(stem.normLevels['vanilla'])
+            stem.byteSize = stem.webstem['targetPath'].stat().st_size
+            stem.wavPeaks = getWaveformValues(
+                stemSrcPath,
+                jamConf.cnf.get('webstem', 'waveformResolution')
+            )
+            stem.calculateSilencePercent()
+            track.byteSize = track.byteSize + stem.byteSize
+
+            #print (stem.uniqueStemName)
+        self.finishWebStemTrack(track, jamConf)
+        return track
 
     def finishWebStemTrack(self, track, jamConf):
         self.copyPlayerFiles(
@@ -124,10 +163,15 @@ class Webstem(object):
             Path(f'{track.webstem["targetDir"]}/stemplayer'),
             'track'
         )
+        self.copyLauncherFiles(
+            jamConf,
+            Path(f'{track.webstem["targetDir"]}/../launcher'),
+            'track'
+        )
         # TODO respect configured document name
         self.copyIndexDocument(
             jamConf,
-            Path(f'{track.webstem["targetDir"]}/../index.html'),
+            Path(f'{track.webstem["targetDir"]}/../index.htm'),
             'track'
         )
 
@@ -137,13 +181,14 @@ class Webstem(object):
         for stem in self.sortStems(track.stems, moveDrumTracksToTop, moveSilentTracksToBottom):
             stemVolume = self.guessInitalVolumeLevel(stem.normLevels, track.dbLevelsInputFiles)
             if jamConf.cnf.get('webstem.gui', 'drumsVolumeBoost') == '1':
-                if stem.uniqueStemName.find('drum') >= 0:
+                if stem.uniqueStemName.lower().find('drum') >= 0:
                     stemVolume = 1
 
             stemsJs.append(
                 replaceMarkersFromFile(
                     {
                         '{stem.path}': str(stem.webstem['targetPath'].name),
+                        '{stem.rawDataPath}': f'{track.dirName}/{stem.path.name}',
                         '{stem.peaks}': self.lineBreakedJoin(stem.wavPeaks, ','),
                         '{stem.title}': stem.uniqueStemName,
                         '{stem.volume}': stemVolume,
@@ -333,10 +378,13 @@ class Webstem(object):
             copytree(str(self.playerDir), str(playerRoot))
 
         # TODO respect configured filename
-        indexDocument = Path(f'{self.targetDir}/index.html')
+        indexDocument = Path(f'{self.targetDir}/index.htm')
         if not indexDocument.is_file():
             copyfile(str(self.htmlTemplate), str(indexDocument))
 
+        launcherRoot = Path(f'{self.targetDir}/launcher')
+        if not launcherRoot.is_dir():
+            copytree(str(self.launcherDir), str(launcherRoot))
 
     '''
         symlinks or hardcopy?
@@ -363,6 +411,31 @@ class Webstem(object):
             targetPath
         )
 
+    '''
+        symlinks or hardcopy?
+    '''
+    def copyLauncherFiles(self, jamConf, targetPath, hostLevel):
+        if os.name == 'nt':
+            self.hardcopyPlayerFiles(jamConf, targetPath)
+            return
+        if jamConf.cnf.get('webstem.filesystem', 'useSymlinks') != '1':
+            self.hardcopyLauncherFiles(jamConf, targetPath)
+            return
+
+        self.symlinkLauncherFiles(jamConf, targetPath, hostLevel)
+
+    def hardcopyLauncherFiles(self, jamConf, targetPath):
+        copytree(str(self.launcherDir), str(targetPath))
+
+    def symlinkLauncherFiles(self, jamConf, targetPath, hostLevel):
+        relativeTarget = '../../../../launcher'
+        if hostLevel == 'session':
+            relativeTarget = '../../launcher'
+        symlink(
+            relativeTarget,
+            targetPath
+        )
+
     def copyIndexDocument(self, jamConf, targetPath, hostLevel):
         if os.name == 'nt':
             self.hardcopyIndexDocument(jamConf, targetPath)
@@ -378,9 +451,9 @@ class Webstem(object):
 
     def symlinkIndexDocument(self, jamConf, targetPath, hostLevel):
         # TODO respect configured document name
-        relativeTarget = '../../../../index.html'
+        relativeTarget = '../../../../index.htm'
         if hostLevel == 'session':
-            relativeTarget = '../../index.html'
+            relativeTarget = '../../index.htm'
         symlink(
             relativeTarget,
             targetPath
@@ -401,43 +474,63 @@ class Webstem(object):
         # copy images
         imagesTargetDir = Path(f'{jamConf.jamSession.webstem["targetDir"]}/data/images')
         ensureExistingEmptyDirectory(imagesTargetDir)
-        for image in jamConf.imageFiles:
-            print(image)
-            relativeMediaPath = str(image.resolve()).replace(str(jamConf.inputDir.resolve()), '')
-            newFileName = az09(
-                relativeMediaPath.replace('/', '-').lstrip('-')
+
+        maxWorkers = int(jamConf.cnf.get('general', 'maxWorkers'))
+
+        if maxWorkers <= 1:
+            # non parallelized version
+            for image in jamConf.imageFiles:
+                self.handleImage(image, imagesTargetDir)
+        else:
+            # paralellized tryout
+            with concurrent.futures.ProcessPoolExecutor(max_workers=maxWorkers) as executor:
+                for image in jamConf.imageFiles:
+                    #track.runProcessing(jamConf)
+                    processedImage = executor.submit(self.handleImage, image, imagesTargetDir, jamConf)
+                    processedImage.add_done_callback(self.handleImageCallback)
+
+
+
+    def handleImageCallback(self, pr):
+        self.imagesJs.append(pr.result())
+
+    def handleImage(self, image, imagesTargetDir, jamConf):
+        print(image)
+        relativeMediaPath = str(image.resolve()).replace(str(jamConf.inputDir.resolve()), '')
+        newFileName = az09(
+            relativeMediaPath.replace('/', '-').lstrip('-')
+        )
+
+        if jamConf.cnf.get('webstem', 'mediaRotate') == '1':
+            doubleRotateImage(
+                image,
+                f'{jamConf.targetDir}/tmp-{newFileName}'
             )
+            image = Path(f'{jamConf.targetDir}/tmp-{newFileName}')
 
-            if jamConf.cnf.get('webstem', 'mediaRotate') == '1':
-                doubleRotateImage(
-                    image,
-                    f'{jamConf.targetDir}/tmp-{newFileName}'
-                )
-                image = Path(f'{jamConf.targetDir}/tmp-{newFileName}')
+        imageTargetPath = f'{imagesTargetDir}/{newFileName}'
+        copyfile(str(image), imageTargetPath)
 
-            imageTargetPath = f'{imagesTargetDir}/{newFileName}'
-            copyfile(str(image), imageTargetPath)
+        createThumbnail(
+            imageTargetPath,
+            f'{imageTargetPath}.thumb.png',
+            jamConf.cnf.get('webstem.gui', 'thumbWidth'),
+            jamConf.cnf.get('webstem.gui', 'thumbHeight')
+        )
 
-            createThumbnail(
-                imageTargetPath,
-                f'{imageTargetPath}.thumb.png',
-                jamConf.cnf.get('webstem.gui', 'thumbWidth'),
-                jamConf.cnf.get('webstem.gui', 'thumbHeight')
-            )
-
-            # persist in json
-            imageJsTemplate = replaceMarkersFromFile(
-                {
-                    '{image.path}': f'data/images/{newFileName}',
-                    '{image.byteSize}': str(image.stat().st_size),
-                    '{image.timestamp}': detectTimestampFromExif(image),
-                    '{image.thumbPath}': f'data/images/{newFileName}.thumb.png',
-                    '{image.title}': '' # TODO which title makes sense?
-                },
-                self.imageConfigTemplate
-            )
-            self.imagesJs.append(imageJsTemplate)
-
+        # persist in json
+        imageJsTemplate = replaceMarkersFromFile(
+            {
+                '{image.path}': f'data/images/{newFileName}',
+                '{image.byteSize}': str(image.stat().st_size),
+                '{image.timestamp}': detectTimestampFromExif(image),
+                '{image.thumbPath}': f'data/images/{newFileName}.thumb.png',
+                '{image.title}': '' # TODO which title makes sense?
+            },
+            self.imageConfigTemplate
+        )
+        self.imagesJs.append(imageJsTemplate)
+        return imageJsTemplate
 
     '''
         copy videos
@@ -527,3 +620,10 @@ class Webstem(object):
                 if stem.color != 'default':
                     continue
                 stem.color = filenamesWithoutColors[stem.path.name]
+
+    def createZip(self, jamConf):
+        if jamConf.cnf.get('webstem.filesystem', 'createZip') != '1':
+            # disabled by config
+            return
+        print('creating zip archive of webstem filesystem')
+        webStemZip(jamConf.targetDir, jamConf.jamSession.webstem['targetDir'])

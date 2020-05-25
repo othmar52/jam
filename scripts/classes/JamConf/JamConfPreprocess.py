@@ -2,6 +2,7 @@
 
 import sys
 from .JamConfBase import JamConfBase
+from .JamConfPreprocessUi24r import JamConfPreprocessUi24r
 
 class JamConfPreprocess(JamConfBase):
     def __init__(self):
@@ -27,6 +28,7 @@ class JamConfPreprocess(JamConfBase):
             'mergeMonoToStereo': False
         }
         self.tracks = {}
+        self.pr = None
 
     def collectDataAndValidate(self):
         self.collectAllFiles()
@@ -35,29 +37,31 @@ class JamConfPreprocess(JamConfBase):
         self.readOrGuessDataScheme() # ui24r or zoomr24
         self.checkProcessingFeaturesForDataScheme()
         if self.preprocess['scheme'] == 'ui24r':
-            from ...helpers.PreProcessUi24rRecordings import buildTracksAndStems
+            #from ...helpers.PreProcessUi24rRecordings import buildTracksAndStems
+            self.pr = JamConfPreprocessUi24r(self)
         else:
             # this makes no sense! but currently zoomr24 is not implemented yet
             from ...helpers.PreProcessUi24rRecordings import buildTracksAndStems
 
-        buildTracksAndStems(self)
+        self.pr.buildTracksAndStems()
 
     def confirmAndRun(self):
-        if self.preprocess['scheme'] == 'ui24r':
-            from ...helpers.PreProcessUi24rRecordings import printForConfirmation
-            from ...helpers.PreProcessUi24rRecordings import executePreProcessing
-        else:
-            # this makes no sense! but currently zoomr24 is not implemented yet
-            from ...helpers.PreProcessUi24rRecordings import printForConfirmation
-            from ...helpers.PreProcessUi24rRecordings import executePreProcessing
+        #if self.preprocess['scheme'] == 'ui24r':
+        #    self.pr = JamConfPreprocessUi24r(self)
+        #    #from ...helpers.PreProcessUi24rRecordings import printForConfirmation
+        #    #from ...helpers.PreProcessUi24rRecordings import executePreProcessing
+        #else:
+        #    # this makes no sense! but currently zoomr24 is not implemented yet
+        #    from ...helpers.PreProcessUi24rRecordings import printForConfirmation
+        #    from ...helpers.PreProcessUi24rRecordings import executePreProcessing
 
-        printForConfirmation(self)
+        self.pr.printForConfirmation()
         choice = input(f'press return to start processing...')
         if choice != '':
             print('exiting...')
             sys.exit()
 
-        executePreProcessing(self)
+        self.pr.executePreProcessing()
 
 
     def readOrGuessDataScheme(self):

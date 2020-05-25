@@ -5,6 +5,7 @@ import os
 import re
 import datetime
 import configparser
+import concurrent.futures
 from pathlib import Path
 from ..helpers.Strings import secondsToMinutes
 from ..helpers.Strings import replaceCommonPlaceholders
@@ -69,6 +70,7 @@ class JamSession():
         self.runProcessingWebstem(jamConf)
         self.runProcessingCuemix(jamConf)
         self.persistTracknamesInInputDir(jamConf)
+        jamConf.generator.tracktitlesToBlacklist(self)
         self.deleteTempFiles(jamConf)
 
     '''
@@ -76,10 +78,23 @@ class JamSession():
         in all possible result scenarios (but don't care about desired output format)
     '''
     def runProcessingStage1(self, jamConf):
-        usedTrackTitles = []
-        for key, track in self.tracks.items():
-            track.runProcessing(jamConf)
-            usedTrackTitles.append(track.trackTitle)
+        maxWorkers = int(jamConf.cnf.get('general', 'maxWorkers'))
+
+        if maxWorkers <= 1:
+            # non parallelized version
+            for key, track in self.tracks.items():
+                track.runProcessing(jamConf)
+        else:
+            # paralellized tryout
+            with concurrent.futures.ProcessPoolExecutor(max_workers=maxWorkers) as executor:
+                for key, track in self.tracks.items():
+                    #track.runProcessing(jamConf)
+                    processedTrack = executor.submit(track.runProcessing, jamConf)
+                    processedTrack.add_done_callback(self.stage1Callback)
+
+
+        #for key, track in self.tracks.items():
+        #    track.runProcessing(jamConf)
 
         trackPathsToMerge = []
         if jamConf.basket.cuemix == True:
@@ -91,9 +106,14 @@ class JamSession():
                     trackPathsToMerge.append(track.tmpFileMergedStems)
                     self.tmpFileCueMix = Path(f'{jamConf.targetDir}/tmp-cuemix-alltracks.wav')
 
-            print(f'SESSION: concatenating all {len(self.tracks)} single tracks to cuemix')
+            print(f'SESSION: concatenating all {len(self.tracks)} single tracks to cuemix...')
             concatAudioFiles(trackPathsToMerge, self.tmpFileCueMix)
 
+    def stage1Callback(self, pr):
+        track = pr.result()
+        self.tracks[track.dirName] = track
+        #for key, track in enumerate(self.tracks):
+        #    print('stage1Callback', key)
 
     def runProcessingAlbum(self, jamConf):
         if jamConf.basket.album == False:
@@ -127,7 +147,7 @@ class JamSession():
         targetFilenameAudio = f'{dirName}.{jamConf.cnf.get("cuemix", "format")}'
         cueSheetFile = Path(f'{targetDir}/{dirName}.cue')
         ensureExistingEmptyDirectory(targetDir)
-
+        print(f'SESSION: converting cuemix to {jamConf.cnf.get("cuemix", "format")}...')
         convertAudio(
             self.tmpFileCueMix,
             jamConf.cnf.get('cuemix', 'codec'),
@@ -252,7 +272,7 @@ class JamSession():
             if trackSection not in parser:
                 parser[trackSection] = {}
             parser[trackSection]['title'] = track.trackTitle
-            if  track.bpm != '' and int(float(track.bpm)) > 0:
+            if track.bpm != '' and int(float(track.bpm)) > 0:
                 parser[trackSection]['bpm'] = track.bpm
 
         with open(configFilePath, 'w') as configFile:

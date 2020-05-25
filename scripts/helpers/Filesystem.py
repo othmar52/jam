@@ -2,8 +2,10 @@
 import os
 import time
 import datetime
+import sys
 from shutil import rmtree
 from PIL import Image, ImageOps, ExifTags
+from .AudioProcessing import generalCmd
 
 def getFileContent(pathAndFileName):
     with open(pathAndFileName, 'r') as theFile:
@@ -59,3 +61,13 @@ def doubleRotateImage(inputPath, targetPath):
     img = Image.open(str(targetPath))
     out = img.rotate(270, expand=True)
     out.save(str(targetPath), exif=exif)
+
+def webStemZip(targetPath, sourceDir):
+    cmd = [
+        'zip', '-r', '-q',
+        str(targetPath) + '/' + sourceDir.name + '-webstem.zip',
+        sourceDir.name,
+        'tracklist.js',
+        '-x', '*/win/**', '*/osx/**', '*/lnx/**' # exclude possible existing browser temp files
+    ]
+    return generalCmd(cmd, 'webstem zip', True, str(sourceDir) + '/../')
