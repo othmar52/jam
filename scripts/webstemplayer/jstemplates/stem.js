@@ -1,6 +1,7 @@
 
     {
       filePath: '{stem.path}',
+      rawDataPath: '{stem.rawDataPath}',
       publicUrl: '',
       title: '{stem.title}',
       color: '{stem.color}',
